@@ -34,10 +34,10 @@ public final class AudioEngine: ObservableObject {
     }
     
     private var voices: [TrackVoice] = [
-        TrackVoice(synthType: .polyKeys, decay: 1.2, cutoff: 4000, level: 0.85),
-        TrackVoice(synthType: .subBass, decay: 0.5, cutoff: 1200, level: 0.9),
-        TrackVoice(synthType: .fmLead, decay: 1.5, cutoff: 5000, level: 0.75),
-        TrackVoice(synthType: .pluck, decay: 0.25, cutoff: 3500, level: 0.7)
+        TrackVoice(decay: 1.2, synthType: .polyKeys, cutoff: 4000, level: 0.85),
+        TrackVoice(decay: 0.5, synthType: .subBass, cutoff: 1200, level: 0.9),
+        TrackVoice(decay: 1.5, synthType: .fmLead, cutoff: 5000, level: 0.75),
+        TrackVoice(decay: 0.25, synthType: .pluck, cutoff: 3500, level: 0.7)
     ]
     
     @Published public var isRunning: Bool = false
@@ -62,6 +62,35 @@ public final class AudioEngine: ObservableObject {
         #endif
     }
     
+    private func generateSample(voice: inout TrackVoice, sampleRate: Double) -> Float {
+        guard voice.active && voice.envelope > 0.001 else {
+            voice.active = false
+            return 0.0
+        }
+        
+        let p = voice.phase
+        var raw: Float = 0.0
+        switch voice.synthType {
+        case .polyKeys:
+            raw = Float((p / .pi) - 1.0)
+        case .subBass:
+            raw = p < .pi ? 0.7 : -0.7
+        case .fmLead:
+            let mod = sin(p * 2.0) * 3.0
+            raw = Float(sin(p + mod))
+        case .pluck:
+            let tri = 2.0 * abs(2.0 * (p / (2.0 * .pi) - floor(p / (2.0 * .pi) + 0.5))) - 1.0
+            raw = Float(tri)
+        }
+        
+        let sample = raw * Float(voice.envelope) * voice.level
+        let phaseInc = 2.0 * .pi * voice.frequency / sampleRate
+        voice.phase += phaseInc
+        if voice.phase >= 2.0 * .pi { voice.phase -= 2.0 * .pi }
+        voice.envelope *= (1.0 - (1.0 / (sampleRate * voice.decay)))
+        return sample
+    }
+
     private func setupEngine() {
         engine.attach(mixer)
         engine.connect(mixer, to: engine.mainMixerNode, format: nil)
@@ -73,42 +102,14 @@ public final class AudioEngine: ObservableObject {
             let sourceNode = AVAudioSourceNode { [weak self] _, _, frameCount, audioBufferList -> OSStatus in
                 guard let self = self else { return noErr }
                 let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
-                
                 var v = self.voices[trackIndex]
-                let phaseInc = 2.0 * .pi * v.frequency / sampleRate
                 
                 for frame in 0..<Int(frameCount) {
-                    var sample: Float = 0.0
-                    
-                    if v.active && v.envelope > 0.001 {
-                        switch v.synthType {
-                        case .polyKeys:
-                            // Polyphonic Sawtooth
-                            sample = Float((v.phase / .pi) - 1.0)
-                        case .subBass:
-                            // Resonant Square + Sub
-                            sample = v.phase < .pi ? 0.7 : -0.7
-                        case .fmLead:
-                            // 2-Operator FM synthesis
-                            let modPhase = v.phase * 2.0
-                            let modulator = sin(modPhase) * 3.0
-                            sample = Float(sin(v.phase + modulator))
-                        case .pluck:
-                            // Triangle wave pluck
-                            sample = Float(2.0 * abs(2.0 * (v.phase / (2.0 * .pi) - floor(v.phase / (2.0 * .pi) + 0.5))) - 1.0)
-                        }
-                        
-                        sample *= Float(v.envelope * Double(v.level))
-                        v.phase += phaseInc
-                        if v.phase >= 2.0 * .pi { v.phase -= 2.0 * .pi }
-                        v.envelope *= (1.0 - (1.0 / (sampleRate * v.decay)))
-                    } else {
-                        v.active = false
-                    }
-                    
+                    let sample = self.generateSample(voice: &v, sampleRate: sampleRate)
                     for buffer in ablPointer {
-                        let ptr = buffer.mData?.assumingMemoryBound(to: Float.self)
-                        ptr?[frame] = sample
+                        if let ptr = buffer.mData?.assumingMemoryBound(to: Float.self) {
+                            ptr[frame] = sample
+                        }
                     }
                 }
                 
