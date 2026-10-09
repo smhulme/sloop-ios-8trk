@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import Combine
 
 public enum SynthType: String, CaseIterable, Identifiable {
     case polyKeys = "Poly Keys"
