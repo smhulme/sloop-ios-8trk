@@ -96,19 +96,22 @@ public final class MIDIManager: ObservableObject {
                 // Real-time System Message (UMP type 1)
                 if messageType == 0x1 {
                     let status = (word >> 16) & 0xFF
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self = self else { return }
-                        if status == 0xFA { // Start
-                            self.isPlaying = true
-                            self.onStart?()
-                        } else if status == 0xFC { // Stop
-                            self.isPlaying = false
-                            self.onStop?()
-                        } else if status == 0xFB { // Continue
-                            self.isPlaying = true
-                            self.onStart?()
-                        } else if status == 0xF8 { // Timing Clock (24 ppqn)
-                            self.handleClockTick()
+                    if status == 0xF8 {
+                        // Timing Clock (24 ppqn) - process directly without allocating main queue closures
+                        self.handleClockTick()
+                    } else {
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self = self else { return }
+                            if status == 0xFA { // Start
+                                self.isPlaying = true
+                                self.onStart?()
+                            } else if status == 0xFC { // Stop
+                                self.isPlaying = false
+                                self.onStop?()
+                            } else if status == 0xFB { // Continue
+                                self.isPlaying = true
+                                self.onStart?()
+                            }
                         }
                     }
                 }
@@ -125,9 +128,11 @@ public final class MIDIManager: ObservableObject {
                 clockIntervals.append(deltaSeconds)
                 if clockIntervals.count > 24 { clockIntervals.removeFirst() }
                 let avgDelta = clockIntervals.reduce(0, +) / Double(clockIntervals.count)
-                let detectedBpm = 60.0 / (avgDelta * 24.0)
-                if detectedBpm >= 40 && detectedBpm <= 240 {
-                    self.bpm = (detectedBpm * 10).rounded() / 10
+                let detectedBpm = (60.0 / (avgDelta * 24.0) * 10).rounded() / 10
+                if detectedBpm >= 40 && detectedBpm <= 240 && abs(detectedBpm - self.bpm) >= 0.5 {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.bpm = detectedBpm
+                    }
                 }
             }
         }
